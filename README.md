@@ -1,13 +1,12 @@
 # Ampersand
                                                             
-                          ▄▄▄▄                                                   ▄▄ 
-                        ▄██▀▀██▄                                                 ██ 
-                        ███  ███ ███▄███▄ ████▄ ▄█▀█▄ ████▄ ▄█▀▀▀  ▀▀█▄ ████▄ ▄████ 
-                        ███▀▀███ ██ ██ ██ ██ ██ ██▄█▀ ██ ▀▀ ▀███▄ ▄█▀██ ██ ██ ██ ██ 
-                        ███  ███ ██ ██ ██ ████▀ ▀█▄▄▄ ██    ▄▄▄█▀ ▀█▄██ ██ ██ ▀████ 
-                                          ██                                        
-                                          ▀▀                                         
-
+ █████╗ ███╗   ███╗██████╗ ███████╗██████╗ ███████╗ █████╗ ███╗   ██╗██████╗ 
+██╔══██╗████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔════╝██╔══██╗████╗  ██║██╔══██╗
+███████║██╔████╔██║██████╔╝█████╗  ██████╔╝███████╗███████║██╔██╗ ██║██║  ██║
+██╔══██║██║╚██╔╝██║██╔═══╝ ██╔══╝  ██╔══██╗╚════██║██╔══██║██║╚██╗██║██║  ██║
+██║  ██║██║ ╚═╝ ██║██║     ███████╗██║  ██║███████║██║  ██║██║ ╚████║██████╔╝
+╚═╝  ╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ 
+                                                                             
 A deterministic, graph-based programming language with a memory arena, WORM (Write-Once Read-Many) immutable semantics, and a zero-allocation lifecycle engine. Built as a visual programming environment with an infinite canvas IDE and a C++ compiler backend.
 
 > **Current status:** v0.7 — Turing complete via MUX + indexed memory access (LOAD/STORE). Self-hosting is the next milestone.
