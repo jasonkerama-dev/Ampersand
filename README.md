@@ -1,6 +1,6 @@
 # Ampersand
-                                                                                                  
-<img width="663" height="170" alt="ascii-art-text" src="https://github.com/user-attachments/assets/cbb70040-6112-4bef-9164-cd5bb0554ed5" />
+
+<img width="1144" height="170" alt="ascii-art-text (1)" src="https://github.com/user-attachments/assets/eec68307-f927-476d-8c8e-d09ac944641d" />
                                                                
 A deterministic, graph-based programming language with a memory arena, WORM (Write-Once Read-Many) immutable semantics, and a zero-allocation lifecycle engine. Built as a visual programming environment with an infinite canvas IDE and a C++ compiler backend.
 
