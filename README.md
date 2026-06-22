@@ -185,4 +185,4 @@ database/migrations/  # SQL schema
 
 ## License
 
-MIT
+Apache-2.0 license
