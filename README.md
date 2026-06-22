@@ -1,12 +1,7 @@
 # Ampersand
-                                                            
- █████╗ ███╗   ███╗██████╗ ███████╗██████╗ ███████╗ █████╗ ███╗   ██╗██████╗ 
-██╔══██╗████╗ ████║██╔══██╗██╔════╝██╔══██╗██╔════╝██╔══██╗████╗  ██║██╔══██╗
-███████║██╔████╔██║██████╔╝█████╗  ██████╔╝███████╗███████║██╔██╗ ██║██║  ██║
-██╔══██║██║╚██╔╝██║██╔═══╝ ██╔══╝  ██╔══██╗╚════██║██╔══██║██║╚██╗██║██║  ██║
-██║  ██║██║ ╚═╝ ██║██║     ███████╗██║  ██║███████║██║  ██║██║ ╚████║██████╔╝
-╚═╝  ╚═╝╚═╝     ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═════╝ 
-                                                                             
+                                                                                                  
+<img width="663" height="170" alt="ascii-art-text" src="https://github.com/user-attachments/assets/cbb70040-6112-4bef-9164-cd5bb0554ed5" />
+                                                               
 A deterministic, graph-based programming language with a memory arena, WORM (Write-Once Read-Many) immutable semantics, and a zero-allocation lifecycle engine. Built as a visual programming environment with an infinite canvas IDE and a C++ compiler backend.
 
 > **Current status:** v0.7 — Turing complete via MUX + indexed memory access (LOAD/STORE). Self-hosting is the next milestone.
