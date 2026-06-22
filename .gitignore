@@ -1,0 +1,40 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Laravel
+/storage/framework/cache/data/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/app/*
+!/storage/app/.gitkeep
+/storage/logs/*
+/bootstrap/cache/*.php
+/vendor/
+/node_modules/
+
+# Compiler binaries
+/compiler/*.exe
+/compiler/*.o
+/compiler/*.obj
+/compiler/*.out
+
+# Generated ADG files
+*.adg
+
+# Runtime artifacts
+err.txt
+out.txt
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
