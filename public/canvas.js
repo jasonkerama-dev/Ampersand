@@ -27,6 +27,7 @@
   let viewStart = { x: 0, y: 0 };
   let isDraggingNode = false;
   let dragOffset = { x: 0, y: 0 };
+  let groupDragOffsets = null;
   let isResizing = false;
   let resizeCorner = '';
   let resizeStart = { x: 0, y: 0 };
@@ -43,11 +44,65 @@
   let editingImm = null;
   let fnNode = null;
 
+  let projectSettings = { memory: 8192, immutable_pct: 3, max_cycles: 1000 };
+
   let nodes = [];
   let edges = [];
   let view = { x: 0, y: 0, zoom: 1 };
   let selectedNode = null;
   let selectedEdge = null;
+  let selectedNodes = [];
+  let multiSelectActive = false;
+  let isBoxSelecting = false;
+  let boxSelectStart = { x: 0, y: 0 };
+  let boxSelectRect = null;
+
+  /* ---- Undo / Redo ---- */
+  let undoStack = [];
+  let redoStack = [];
+  const MAX_UNDO = 50;
+
+  function pushUndo() {
+    if (undoStack.length >= MAX_UNDO) undoStack.shift();
+    redoStack = [];
+    undoStack.push({
+      nodes: nodes.map(n => JSON.parse(JSON.stringify(n))),
+      edges: edges.map(e => ({ ...e })),
+    });
+  }
+
+  function undo() {
+    if (undoStack.length === 0) return;
+    redoStack.push({
+      nodes: nodes.map(n => JSON.parse(JSON.stringify(n))),
+      edges: edges.map(e => ({ ...e })),
+    });
+    const state = undoStack.pop();
+    restoreState(state);
+  }
+
+  function redo() {
+    if (redoStack.length === 0) return;
+    undoStack.push({
+      nodes: nodes.map(n => JSON.parse(JSON.stringify(n))),
+      edges: edges.map(e => ({ ...e })),
+    });
+    const state = redoStack.pop();
+    restoreState(state);
+  }
+
+  function restoreState(state) {
+    nodes.length = 0;
+    edges.length = 0;
+    for (const n of state.nodes) nodes.push(n);
+    for (const e of state.edges) edges.push(e);
+    selectedNode = null;
+    selectedNodes = [];
+    selectedEdge = null;
+    fnNode = null;
+    deselectNode();
+    render();
+  }
 
   let sizeInKB = 1;
   let autoCompleteActive = false;
@@ -78,6 +133,8 @@
     t.view = { x: view.x, y: view.y, zoom: view.zoom };
     t.isDirty = isDirty;
     t.programName = programName;
+    t.undoStack = undoStack;
+    t.redoStack = redoStack;
   }
 
   function switchTab(idx) {
@@ -90,12 +147,27 @@
     view = { x: t.view.x, y: t.view.y, zoom: t.view.zoom };
     isDirty = t.isDirty;
     programName = t.programName;
+    undoStack = t.undoStack || [];
+    redoStack = t.redoStack || [];
     progDisplay.textContent = programName;
     if (isDirty) progDisplay.classList.add('dirty');
     else progDisplay.classList.remove('dirty');
     deselectNode();
     renderTabBar();
     render();
+  }
+
+  function makeTabState(name, nodesArr, edgesArr) {
+    return {
+      name,
+      nodes: nodesArr,
+      edges: edgesArr,
+      view: { x: 0, y: 0, zoom: 1 },
+      isDirty: false,
+      programName: name,
+      undoStack: [],
+      redoStack: [],
+    };
   }
 
   function addTab(name, adgText) {
@@ -108,29 +180,17 @@
       nodes = savedNodes; edges = savedEdges;
       parseAdgToCanvasInner(adgText, savedNodes, savedEdges);
       nodes = heldNodes; edges = heldEdges;
-      tabs.push({
-        name,
-        nodes: savedNodes,
-        edges: savedEdges,
-        view: savedView,
-        isDirty: false,
-        programName: name,
-      });
+      tabs.push(makeTabState(name, savedNodes, savedEdges));
     } else {
-      tabs.push({
-        name,
-        nodes: [],
-        edges: [],
-        view: { x: 0, y: 0, zoom: 1 },
-        isDirty: false,
-        programName: name,
-      });
+      tabs.push(makeTabState(name, [], []));
     }
     activeTabIdx = tabs.length - 1;
     const t = tabs[activeTabIdx];
     nodes = t.nodes;
     edges = t.edges;
     view = { x: t.view.x, y: t.view.y, zoom: t.view.zoom };
+    undoStack = t.undoStack || [];
+    redoStack = t.redoStack || [];
     isDirty = false;
     programName = name;
     progDisplay.textContent = name;
@@ -153,6 +213,8 @@
       view = { x: t.view.x, y: t.view.y, zoom: t.view.zoom };
       isDirty = t.isDirty;
       programName = t.programName;
+      undoStack = t.undoStack || [];
+      redoStack = t.redoStack || [];
       progDisplay.textContent = programName;
       if (isDirty) progDisplay.classList.add('dirty');
       else progDisplay.classList.remove('dirty');
@@ -198,7 +260,6 @@
 
   const searchInput = document.getElementById('searchInput');
   const fnEditor = document.getElementById('fnEditor');
-  const sidebar = document.getElementById('sidebar');
   const inputsField = document.getElementById('inputsField');
   const fnNameInput = document.getElementById('fnNameInput');
   const sizeInput = document.getElementById('sizeValue');
@@ -225,11 +286,16 @@
   };
   window.App = App;
 
+  let resizeFrame = null;
   function resizeCanvas() {
-    const rect = canvas.parentElement.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    render();
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = null;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      if (!document.querySelector('.modal-overlay[style*="flex"]')) render();
+    });
   }
   window.addEventListener('resize', resizeCanvas);
   resizeCanvas();
@@ -467,10 +533,22 @@
     ctx.strokeStyle = isSel ? '#fbbf24' : 'rgba(99, 102, 241, 0.7)';
     ctx.lineWidth = isSel ? Math.max(4, 5 * view.zoom) : Math.max(2, 2.5 * view.zoom);
     ctx.stroke();
+
+    if (isSel && view.zoom > 0.3) {
+      const mx = (start.x + end.x) / 2;
+      const my = (start.y + end.y) / 2;
+      ctx.fillStyle = '#fbbf24';
+      ctx.font = `400 ${Math.max(8, 10 * view.zoom)}px 'JetBrains Mono', 'SF Mono', monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      const label = edge.fromPortId.replace('out', '').replace('in', '') || '';
+      ctx.fillText(label, mx + 8 * view.zoom, my - 4 * view.zoom);
+    }
   }
 
   function createEdge(fromNode, fromPortId, toNode, toPortId) {
     if (edges.some(e => e.fromNodeId === fromNode.id && e.fromPortId === fromPortId && e.toNodeId === toNode.id && e.toPortId === toPortId)) return;
+    pushUndo();
     edges.push({ fromNodeId: fromNode.id, fromPortId, toNodeId: toNode.id, toPortId });
     markDirty();
   }
@@ -489,6 +567,24 @@
     return null;
   }
 
+  function duplicateNode(node) {
+    const newN = JSON.parse(JSON.stringify(node));
+    newN.id = ++nodeIdCounter;
+    newN.x = node.x + 30;
+    newN.y = node.y + 30;
+    newN.dbId = null;
+    nodes.push(newN);
+    if (selectedNodes.length <= 1) {
+      deselectNode();
+      selectNode(newN);
+    } else {
+      selectedNodes.push(newN);
+      selectedNode = newN;
+    }
+    markDirty();
+    render();
+  }
+
   function addNode(type, opts) {
     const cx = (opts?.x !== undefined && opts?.x !== null) ? opts.x : (-view.x) + (Math.random() - 0.5) * 200;
     const cy = (opts?.y !== undefined && opts?.y !== null) ? opts.y : (-view.y) + (Math.random() - 0.5) * 200;
@@ -500,8 +596,8 @@
       fitNodeWidth(n, label, 150, 40);
     } else if (type === 'immutable') {
       const hasVal = opts?.initialized && opts?.immValue;
-      n.w = hasVal ? 130 : 110;
-      n.h = 40;
+      n.w = hasVal ? 160 : 130;
+      n.h = 60;
       n.color = '#059669';
       n.label = opts?.name ?? `imm_${nodes.length + 1}`;
       n.immValue = opts?.immValue ?? null;
@@ -517,18 +613,38 @@
     } else {
       n.color = `hsl(${Math.random() * 360}, 60%, 50%)`;
     }
+    pushUndo();
     nodes.push(n);
     markDirty();
     selectNode(n);
     render();
   }
 
-  function selectNode(node) {
-    selectedNode = node;
+  function selectNode(node, addToSelection) {
+    if (addToSelection && node) {
+      if (selectedNodes.includes(node)) {
+        const idx = selectedNodes.indexOf(node);
+        selectedNodes.splice(idx, 1);
+        if (selectedNodes.length > 0) {
+          selectedNode = selectedNodes[selectedNodes.length - 1];
+        } else {
+          selectedNode = null;
+          deselectNode();
+          return;
+        }
+      } else {
+        selectedNodes.push(node);
+        selectedNode = node;
+      }
+    } else {
+      selectedNode = node;
+      selectedNodes = node ? [node] : [];
+    }
     if (node?.type === 'function') {
       fnNode = node;
       fnNameInput.value = node.fnName;
       inputsField.value = node.fnInputs;
+      document.getElementById('outputsField').value = node.fnOutputs || '';
       fnEditor.value = node.fnCode;
       sizeInput.value = node.fnSizeKB;
       sizeInKB = node.fnSizeKB;
@@ -549,10 +665,12 @@
 
   function deselectNode() {
     selectedNode = null;
+    selectedNodes = [];
     fnNode = null;
     fnNameInput.value = '';
     fnEditor.value = '';
     inputsField.value = '';
+    document.getElementById('outputsField').value = '';
     sizeInput.value = 1;
     sizeInKB = 1;
     sizeBarFill.style.width = (1 / 1024 * 100) + '%';
@@ -572,6 +690,26 @@
 
   function updateSelectionUI() {
     if (!selectedNode) { selRing.style.display = 'none'; [rNW, rNE, rSW, rSE].forEach(h => h.style.display = 'none'); return; }
+
+    if (selectedNodes.length > 1) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const n of selectedNodes) {
+        if (n.x < minX) minX = n.x;
+        if (n.y < minY) minY = n.y;
+        if (n.x + n.w > maxX) maxX = n.x + n.w;
+        if (n.y + n.h > maxY) maxY = n.y + n.h;
+      }
+      const p1 = worldToScreen(minX, minY);
+      const p2 = worldToScreen(maxX, maxY);
+      selRing.style.display = 'block';
+      selRing.style.left = Math.min(p1.x, p2.x) + 'px';
+      selRing.style.top = Math.min(p1.y, p2.y) + 'px';
+      selRing.style.width = Math.abs(p2.x - p1.x) + 'px';
+      selRing.style.height = Math.abs(p2.y - p1.y) + 'px';
+      [rNW, rNE, rSW, rSE].forEach(h => h.style.display = 'block');
+      return;
+    }
+
     const p1 = worldToScreen(selectedNode.x, selectedNode.y);
     const p2 = worldToScreen(selectedNode.x + selectedNode.w, selectedNode.y + selectedNode.h);
     selRing.style.display = 'block';
@@ -641,16 +779,28 @@
         ctx.fillText(n.label, left + w / 2, top + h / 2);
       } else if (n.type === 'immutable') {
         ctx.fillStyle = '#ffffff';
-        ctx.font = `300 ${Math.max(11, 13 * view.zoom)}px 'Inter', system-ui, sans-serif`;
+        ctx.font = `500 ${Math.max(12, 14 * view.zoom)}px 'Inter', system-ui, sans-serif`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(n.label, left + w / 2, top + h / 2);
+        ctx.fillText(n.label, left + w / 2, top + 18 * view.zoom);
         const hasVal = n.initialized && n.immValue !== null;
         if (hasVal && view.zoom > 0.4) {
+          const display = n.immValue.length > 20 ? n.immValue.substring(0, 20) + '...' : n.immValue;
+          const cw = w - 12 * view.zoom;
+          const ch = 22 * view.zoom;
+          const cx = left + 6 * view.zoom;
+          const cy = top + h - 28 * view.zoom;
+          ctx.save();
+          ctx.fillStyle = 'rgba(0,0,0,0.15)';
+          ctx.strokeStyle = 'rgba(167, 243, 208, 0.3)';
+          ctx.lineWidth = 1 * view.zoom;
+          ctx.beginPath();
+          ctx.roundRect(cx, cy, cw, ch, 4);
+          ctx.fill(); ctx.stroke();
           ctx.fillStyle = '#a7f3d0';
-          ctx.font = `200 ${Math.max(7, 9 * view.zoom)}px 'JetBrains Mono', 'SF Mono', monospace`;
+          ctx.font = `500 ${Math.max(10, 11 * view.zoom)}px 'JetBrains Mono', 'SF Mono', monospace`;
           ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          const display = n.immValue.length > 15 ? n.immValue.substring(0, 15) + '...' : n.immValue;
-          ctx.fillText(display, left + w / 2, top + h - 4 * view.zoom);
+          ctx.fillText(display, left + w / 2, cy + ch / 2);
+          ctx.restore();
         }
       } else if (n.type === 'function') {
         ctx.fillStyle = '#e9d5ff';
@@ -671,8 +821,20 @@
       for (const p of getPorts(n)) drawPort(p);
     }
 
+    if (isBoxSelecting && boxSelectRect) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(99, 102, 241, 0.08)';
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(boxSelectRect.x, boxSelectRect.y, boxSelectRect.w, boxSelectRect.h);
+      ctx.fillRect(boxSelectRect.x, boxSelectRect.y, boxSelectRect.w, boxSelectRect.h);
+      ctx.restore();
+    }
+
     updateSelectionUI();
-    document.getElementById('infoDisplay').textContent = `Z: ${Math.round(view.zoom * 100)}% \u00b7 ${nodes.length} nodes \u00b7 ${edges.length} wires`;
+    const selCount = selectedNodes.length > 1 ? ` \u00b7 ${selectedNodes.length} sel` : '';
+    document.getElementById('infoDisplay').textContent = `Z: ${Math.round(view.zoom * 100)}% \u00b7 ${nodes.length} nodes \u00b7 ${edges.length} wires${selCount}`;
   }
 
   const tooltipEl = document.getElementById('nodeTooltip');
@@ -714,21 +876,55 @@
      times via WASD / arrow keys (handled in the keyboard section below,
      independent of Ctrl state). */
 
+  function getDragOffsets(world) {
+    if (selectedNodes.length > 1) {
+      const cx = selectedNodes.reduce((s, n) => s + n.x, 0) / selectedNodes.length;
+      const cy = selectedNodes.reduce((s, n) => s + n.y, 0) / selectedNodes.length;
+      return { x: world.x - cx, y: world.y - cy };
+    }
+    return null;
+  }
+
   canvas.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 && e.button !== 1) return;
+    const isMiddle = e.button === 1;
+    if (isMiddle) { e.preventDefault(); isPanning = true; panStart = { x: e.clientX, y: e.clientY }; viewStart = { x: view.x, y: view.y }; return; }
     const pos = { x: e.clientX - canvas.getBoundingClientRect().left, y: e.clientY - canvas.getBoundingClientRect().top };
 
     if (e.ctrlKey || e.metaKey) {
-      // Mouse lock: only node-dragging is permitted while Ctrl/Cmd is held.
       const world = screenToWorld(pos.x, pos.y);
       const hit = nodeAt(world.x, world.y);
       if (hit) {
         selectedEdge = null;
-        selectNode(hit);
+        if (e.shiftKey) {
+          selectNode(hit, true);
+        } else {
+          selectNode(hit);
+        }
         isDraggingNode = true;
-        dragOffset = { x: world.x - hit.x, y: world.y - hit.y };
+        if (selectedNodes.length > 1) {
+          groupDragOffsets = getDragOffsets(world);
+        } else {
+          dragOffset = { x: world.x - hit.x, y: world.y - hit.y };
+        }
       }
-      // No node under the cursor: do nothing. No panning, no deselect.
+      return;
+    }
+
+    if (e.shiftKey) {
+      const world = screenToWorld(pos.x, pos.y);
+      const hit = nodeAt(world.x, world.y);
+      if (hit) {
+        selectedEdge = null;
+        selectNode(hit, true);
+        isDraggingNode = true;
+        groupDragOffsets = getDragOffsets(world);
+        return;
+      }
+      isBoxSelecting = true;
+      multiSelectActive = true;
+      boxSelectStart = { x: pos.x, y: pos.y };
+      boxSelectRect = null;
       return;
     }
 
@@ -747,9 +943,9 @@
     }
 
     const hitEdge = edgeAtWorldPos(world.x, world.y);
-    if (hitEdge) {
+    if (hitEdge && !e.shiftKey) {
       selectedEdge = hitEdge;
-      selectedNode = null; fnNode = null;
+      selectedNode = null; selectedNodes = []; fnNode = null;
       updateSelectionUI();
       render();
       return;
@@ -772,17 +968,37 @@
     mouseScreen = pos;
     mouseWorld = screenToWorld(pos.x, pos.y);
 
+    if (isBoxSelecting) {
+      boxSelectRect = { x: Math.min(boxSelectStart.x, pos.x), y: Math.min(boxSelectStart.y, pos.y), w: Math.abs(pos.x - boxSelectStart.x), h: Math.abs(pos.y - boxSelectStart.y) };
+      selectedNodes = [];
+      const worldTL = screenToWorld(boxSelectRect.x, boxSelectRect.y);
+      const worldBR = screenToWorld(boxSelectRect.x + boxSelectRect.w, boxSelectRect.y + boxSelectRect.h);
+      const rx1 = Math.min(worldTL.x, worldBR.x), ry1 = Math.min(worldTL.y, worldBR.y);
+      const rx2 = Math.max(worldTL.x, worldBR.x), ry2 = Math.max(worldTL.y, worldBR.y);
+      for (const n of nodes) {
+        if (n.x < rx2 && n.x + n.w > rx1 && n.y < ry2 && n.y + n.h > ry1) selectedNodes.push(n);
+      }
+      if (selectedNodes.length > 0) selectedNode = selectedNodes[selectedNodes.length - 1];
+      else selectedNode = null;
+      updateSelectionUI(); render(); return;
+    }
+
     // Node-dragging is allowed to continue even if Ctrl is released mid-drag.
-    if (isDraggingNode && selectedNode) {
+    if (isDraggingNode) {
       const world = screenToWorld(pos.x, pos.y);
-      selectedNode.x = world.x - dragOffset.x;
-      selectedNode.y = world.y - dragOffset.y;
+      if (selectedNodes.length > 1 && groupDragOffsets) {
+        const dx = world.x - groupDragOffsets.x - (selectedNodes.reduce((s, n) => s + n.x, 0) / selectedNodes.length);
+        const dy = world.y - groupDragOffsets.y - (selectedNodes.reduce((s, n) => s + n.y, 0) / selectedNodes.length);
+        for (const n of selectedNodes) { n.x += dx; n.y += dy; }
+        groupDragOffsets = getDragOffsets(world);
+      } else if (selectedNode) {
+        selectedNode.x = world.x - dragOffset.x;
+        selectedNode.y = world.y - dragOffset.y;
+      }
       updateSelectionUI(); render(); return;
     }
 
     if (e.ctrlKey || e.metaKey) {
-      // Mouse lock: no panning preview, no port-drag preview, no resize, no
-      // hover tooltip, no hover cursor feedback.
       hideNodeTooltip();
       canvas.style.cursor = '';
       return;
@@ -812,7 +1028,7 @@
     }
 
     const hoveredNode = mouseWorld ? nodeAt(mouseWorld.x, mouseWorld.y) : null;
-    if (hoveredNode && !isDraggingNode && !isDraggingPort && !isResizing && !isPanning) {
+    if (hoveredNode && !isDraggingNode && !isDraggingPort && !isResizing && !isPanning && !isBoxSelecting) {
       showNodeTooltip(hoveredNode, e.clientX, e.clientY);
     } else {
       hideNodeTooltip();
@@ -824,52 +1040,132 @@
   });
 
   canvas.addEventListener('mouseup', () => {
+    if (isBoxSelecting && boxSelectRect && boxSelectRect.w < 10 && boxSelectRect.h < 10 && !multiSelectActive) {
+      deselectNode();
+    }
+    if (isBoxSelecting && selectedNodes.length > 0) {
+      selectedNode = selectedNodes[selectedNodes.length - 1];
+    }
     if (isDraggingPort && draggingPort && snapTarget) {
       const srcPort = draggingPort.type === 'output' ? draggingPort : snapTarget;
       const dstPort = draggingPort.type === 'output' ? snapTarget : draggingPort;
       createEdge(srcPort.node, srcPort.id, dstPort.node, dstPort.id);
     }
-    if (isDraggingNode || isResizing) markDirty();
-    isPanning = false; isDraggingNode = false; isResizing = false; isDraggingPort = false;
-    draggingPort = null; snapTarget = null; canvas.style.cursor = '';
+    if (isDraggingNode || isResizing || isBoxSelecting) markDirty();
+    isPanning = false; isDraggingNode = false; isResizing = false; isDraggingPort = false; isBoxSelecting = false;
+    multiSelectActive = false;
+    draggingPort = null; snapTarget = null; groupDragOffsets = null; boxSelectRect = null; canvas.style.cursor = '';
     mouseScreen = null; mouseWorld = null;
     render();
   });
 
   canvas.addEventListener('mouseleave', () => {
-    isPanning = false; isDraggingNode = false; isResizing = false; isDraggingPort = false;
-    draggingPort = null; snapTarget = null;
+    isPanning = false; isDraggingNode = false; isResizing = false; isDraggingPort = false; isBoxSelecting = false;
+    draggingPort = null; snapTarget = null; groupDragOffsets = null; boxSelectRect = null; multiSelectActive = false;
     mouseScreen = null; mouseWorld = null;
     hideNodeTooltip();
   });
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    if (e.ctrlKey || e.metaKey) return; // Mouse lock: wheel zoom suppressed too.
-    const pos = { x: e.clientX - canvas.getBoundingClientRect().left, y: e.clientY - canvas.getBoundingClientRect().top };
-    const world = screenToWorld(pos.x, pos.y);
-    const delta = -e.deltaY * 0.001;
-    const newZoom = Math.min(5, Math.max(0.1, view.zoom * (1 + delta)));
-    view.x = world.x - (pos.x - canvas.width / 2) / newZoom;
-    view.y = world.y - (pos.y - canvas.height / 2) / newZoom;
+    if (e.ctrlKey || e.metaKey) return;
+    const dir = -Math.sign(e.deltaY);
+    const factor = dir > 0 ? 1.15 : 1 / 1.15;
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const world = screenToWorld(cx, cy);
+    const newZoom = Math.min(5, Math.max(0.1, view.zoom * factor));
+    view.x = world.x - (cx - canvas.width / 2) / newZoom;
+    view.y = world.y - (cy - canvas.height / 2) / newZoom;
     view.zoom = newZoom;
     render();
   }, { passive: false });
 
+  const contextMenu = document.createElement('div');
+  contextMenu.id = 'canvasContextMenu';
+  contextMenu.style.cssText = 'position:fixed;z-index:3001;background:rgba(26,26,46,0.98);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.1);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.6);padding:4px;font-family:Inter,system-ui,sans-serif;font-weight:300;font-size:13px;display:none;min-width:180px;';
+  contextMenu.innerHTML = `
+    <div class="ctx-item" data-action="variable"><i class="fa-solid fa-cube" style="width:18px;color:#3b82f6"></i> Add Variable</div>
+    <div class="ctx-item" data-action="immutable"><i class="fa-solid fa-lock" style="width:18px;color:#059669"></i> Add Immutable</div>
+    <div class="ctx-sep"></div>
+    <div class="ctx-item" data-action="duplicate"><i class="fa-regular fa-clone" style="width:18px;color:#8888aa"></i> Duplicate</div>
+    <div class="ctx-item" data-action="delete"><i class="fa-solid fa-trash-can" style="width:18px;color:#ef4444"></i> Delete</div>
+  `;
+  const ctxItemStyle = document.createElement('style');
+  ctxItemStyle.textContent = `.ctx-item{padding:8px 12px;border-radius:6px;cursor:pointer;color:#c8c8e8;display:flex;align-items:center;gap:8px;transition:0.1s}.ctx-item:hover{background:rgba(99,102,241,0.2);color:#e0e0f0}.ctx-sep{height:1px;background:rgba(255,255,255,0.06);margin:4px 8px}`;
+  contextMenu.appendChild(ctxItemStyle);
+  document.body.appendChild(contextMenu);
+
+  let ctxMenuWorld = null;
+  let ctxMenuTarget = null;
+
+  contextMenu.addEventListener('mousedown', (e) => {
+    const action = e.target.closest('.ctx-item')?.dataset?.action;
+    if (!action) return;
+    contextMenu.style.display = 'none';
+    if (action === 'variable') {
+      if (ctxMenuWorld) { pendingVarPos = ctxMenuWorld; showVarModal(); }
+    } else if (action === 'immutable') {
+      if (ctxMenuWorld) { pendingImmPos = ctxMenuWorld; showImmModal(); }
+    } else if (action === 'duplicate') {
+      if (selectedNodes.length > 0) {
+        pushUndo();
+        const toDup = [...selectedNodes];
+        deselectNode();
+        for (const n of toDup) duplicateNode(n);
+      } else if (selectedNode) {
+        pushUndo();
+        duplicateNode(selectedNode);
+      }
+    } else if (action === 'delete') {
+      if (selectedNode || selectedNodes.length > 0) {
+        pushUndo();
+        if (selectedNodes.length > 0) {
+          const ids = new Set(selectedNodes.map(n => n.id));
+          for (let i = nodes.length - 1; i >= 0; i--) { if (ids.has(nodes[i].id)) nodes.splice(i, 1); }
+          for (let i = edges.length - 1; i >= 0; i--) { if (ids.has(edges[i].fromNodeId) || ids.has(edges[i].toNodeId)) edges.splice(i, 1); }
+        } else {
+          const sid = selectedNode.id;
+          const idx = nodes.indexOf(selectedNode);
+          if (idx !== -1) nodes.splice(idx, 1);
+          for (let i = edges.length - 1; i >= 0; i--) { if (edges[i].fromNodeId === sid || edges[i].toNodeId === sid) edges.splice(i, 1); }
+        }
+        markDirty();
+        deselectNode();
+        render();
+      }
+    }
+  });
+
+  document.addEventListener('mousedown', (e) => {
+    if (contextMenu.style.display !== 'none' && !contextMenu.contains(e.target)) contextMenu.style.display = 'none';
+  });
+
   canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    if (e.ctrlKey || e.metaKey) return; // Mouse lock: right-click editing suppressed too.
+    if (e.ctrlKey || e.metaKey) return;
     const world = screenToWorld(e.clientX - canvas.getBoundingClientRect().left, e.clientY - canvas.getBoundingClientRect().top);
     const hit = nodeAt(world.x, world.y);
+    ctxMenuWorld = world;
+    ctxMenuTarget = hit;
+
+    if (hit) {
+      if (!selectedNodes.includes(hit) && selectedNode !== hit) {
+        selectNode(hit);
+      }
+    } else {
+      deselectNode();
+      deselectEdge();
+    }
+
     if (hit && hit.type === 'variable') {
-      selectNode(hit);
       editingVar = hit;
       document.getElementById('varModalTitle').textContent = 'Edit Variable';
       document.getElementById('varNameInput').value = hit.label;
       document.getElementById('varModal').style.display = 'flex';
       document.getElementById('varNameInput').focus();
+      return;
     } else if (hit && hit.type === 'immutable') {
-      selectNode(hit);
       editingImm = hit;
       document.getElementById('immModalTitle').textContent = 'Edit Immutable';
       document.getElementById('immNameInput').value = hit.label;
@@ -877,12 +1173,27 @@
       document.getElementById('immInitialized').checked = hit.initialized;
       document.getElementById('immModal').style.display = 'flex';
       document.getElementById('immNameInput').focus();
+      return;
     }
+
+    contextMenu.style.left = e.clientX + 'px';
+    contextMenu.style.top = e.clientY + 'px';
+    const dupItem = contextMenu.querySelector('[data-action="duplicate"]');
+    const delItem = contextMenu.querySelector('[data-action="delete"]');
+    if (dupItem) dupItem.style.display = selectedNode || selectedNodes.length > 0 ? 'flex' : 'none';
+    if (delItem) delItem.style.display = selectedNode || selectedNodes.length > 0 ? 'flex' : 'none';
+    contextMenu.style.display = 'block';
   });
 
   /* ---- Var Modal ---- */
 
+  function stopMovementIfModal() {
+    if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+    velX = 0; velY = 0;
+  }
+
   function showVarModal() {
+    stopMovementIfModal();
     document.getElementById('varModalTitle').textContent = 'New Variable';
     document.getElementById('varModal').style.display = 'flex';
     document.getElementById('varNameInput').value = '';
@@ -915,6 +1226,7 @@
   /* ---- Immutable Modal ---- */
 
   function showImmModal() {
+    stopMovementIfModal();
     document.getElementById('immModalTitle').textContent = 'New Immutable';
     document.getElementById('immModal').style.display = 'flex';
     document.getElementById('immNameInput').value = '';
@@ -944,7 +1256,8 @@
       editingImm.label = document.getElementById('immNameInput').value.trim() || editingImm.label;
       editingImm.immValue = val || null;
       editingImm.initialized = initialized;
-      editingImm.h = initialized && val ? 64 : 52;
+      editingImm.w = initialized && val ? 160 : 130;
+      editingImm.h = 60;
       editingImm = null; hideImmModal(); markDirty(); render(); return;
     }
     if (!pendingImmPos) return;
@@ -960,7 +1273,14 @@
 
   document.getElementById('btnAddVariable').addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', 'variable'); e.dataTransfer.effectAllowed = 'copy'; });
   document.getElementById('btnAddImmutable').addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', 'immutable'); e.dataTransfer.effectAllowed = 'copy'; });
-  canvas.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  let dragOverFrame = null;
+  canvas.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!dragOverFrame) {
+      dragOverFrame = requestAnimationFrame(() => { dragOverFrame = null; });
+    }
+  });
   canvas.addEventListener('drop', (e) => {
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) return; // Mouse lock: dropping new nodes suppressed too.
@@ -983,17 +1303,24 @@
   sizeInput.addEventListener('input', markDirty);
   fnNameInput.addEventListener('input', markDirty);
 
+  let syncFnTimeout = null;
+
   function syncFnNode() {
-    if (fnNode && fnNode === selectedNode) {
-      fnNode.fnName = fnNameInput.value.trim() || 'handler';
-      fnNode.fnCode = fnEditor.value;
-      fnNode.fnInputs = inputsField.value;
-      fnNode.fnSizeKB = sizeInKB;
-      fnNode.fnOp = document.getElementById('fnOpSelect').value;
-      fnNode.fnEnd = document.getElementById('fnEndToggle').checked;
-      fnNode.label = fnNode.fnName;
-      render();
-    }
+    if (syncFnTimeout) cancelAnimationFrame(syncFnTimeout);
+    syncFnTimeout = requestAnimationFrame(() => {
+      syncFnTimeout = null;
+      if (fnNode && fnNode === selectedNode && document.querySelector('.modal-overlay[style*="flex"]') === null) {
+        fnNode.fnName = fnNameInput.value.trim() || 'handler';
+        fnNode.fnCode = fnEditor.value;
+        fnNode.fnInputs = inputsField.value;
+        fnNode.fnOutputs = document.getElementById('outputsField').value;
+        fnNode.fnSizeKB = sizeInKB;
+        fnNode.fnOp = document.getElementById('fnOpSelect').value;
+        fnNode.fnEnd = document.getElementById('fnEndToggle').checked;
+        fnNode.label = fnNode.fnName;
+        render();
+      }
+    });
   }
 
   fnEditor.addEventListener('input', syncFnNode);
@@ -1003,10 +1330,51 @@
   document.getElementById('fnOpSelect').addEventListener('change', syncFnNode);
   document.getElementById('fnEndToggle').addEventListener('change', syncFnNode);
 
-  fnEditor.addEventListener('focus', () => sidebar.classList.add('expanded'));
-  fnEditor.addEventListener('blur', () => {
-    setTimeout(() => { if (!sidebar.contains(document.activeElement)) sidebar.classList.remove('expanded'); }, 150);
+  /* ---- Activity Bar ---- */
+
+  function switchActivityPanel(panelId) {
+    document.querySelectorAll('.activity-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.sidebar-panel').forEach(el => el.classList.remove('active'));
+    const actItem = document.querySelector(`.activity-item[data-panel="${panelId}"]`);
+    if (actItem) actItem.classList.add('active');
+    const panel = document.getElementById(`panel-${panelId}`);
+    if (panel) panel.classList.add('active');
+  }
+
+  document.querySelectorAll('.activity-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const panel = el.dataset.panel;
+      const wasActive = el.classList.contains('active');
+      if (wasActive) {
+        el.classList.remove('active');
+        document.getElementById(`panel-${panel}`)?.classList.remove('active');
+      } else {
+        switchActivityPanel(panel);
+      }
+    });
   });
+
+  function syncSettingsToSidebar() {
+    const memInput = document.getElementById('sidebarMemory');
+    const immInput = document.getElementById('sidebarImmPct');
+    const cycInput = document.getElementById('sidebarCycles');
+    if (memInput) memInput.value = projectSettings.memory || 8192;
+    if (immInput) immInput.value = projectSettings.immutable_pct || 3;
+    if (cycInput) cycInput.value = projectSettings.max_cycles || 1000;
+  }
+
+  function applySettingsFromSidebar() {
+    const memInput = document.getElementById('sidebarMemory');
+    const immInput = document.getElementById('sidebarImmPct');
+    const cycInput = document.getElementById('sidebarCycles');
+    if (memInput) projectSettings.memory = Math.max(256, parseInt(memInput.value, 10) || 8192);
+    if (immInput) projectSettings.immutable_pct = Math.max(1, Math.min(50, parseInt(immInput.value, 10) || 3));
+    if (cycInput) projectSettings.max_cycles = Math.max(1, parseInt(cycInput.value, 10) || 1000);
+  }
+
+  document.getElementById('sidebarMemory')?.addEventListener('input', () => { applySettingsFromSidebar(); markDirty(); });
+  document.getElementById('sidebarImmPct')?.addEventListener('input', () => { applySettingsFromSidebar(); markDirty(); });
+  document.getElementById('sidebarCycles')?.addEventListener('input', () => { applySettingsFromSidebar(); markDirty(); });
 
   document.getElementById('btnCreateFn').addEventListener('click', () => {
     const name = fnNameInput.value.trim() || 'handler';
@@ -1050,7 +1418,8 @@
     return {
       functions: flat.filter(n => n.type === 'function').map(n => ({
         dbId: n.dbId ?? null, fnName: n.fnName, fnCode: n.fnCode,
-        fnInputs: n.fnInputs, fnSizeKB: n.fnSizeKB,
+        fnInputs: n.fnInputs, fnOutputs: n.fnOutputs || '',
+        fnSizeKB: n.fnSizeKB,
         fnOp: n.fnOp || '', fnEnd: !!n.fnEnd, x: n.x, y: n.y,
       })),
       variables: flat.filter(n => n.type === 'variable').map(n => ({
@@ -1070,13 +1439,14 @@
           toPortId: e.toPortId,
         };
       }),
+      settings: { ...projectSettings },
     };
   }
 
   function runCompile() {
     const canvasData = serializeCanvasToAdg();
 
-    outputBox.textContent = 'Compiling via Ampersand Engine...';
+    outputBox.innerHTML = '<span style="color:#8888aa">Compiling via Ampersand Engine...</span>';
     outputBox.classList.add('has-output');
 
     apiPost('compile', {
@@ -1090,32 +1460,51 @@
         console.log('Generated .adg:\n' + data.adg);
       }
 
-      let display = '';
+      let html = '';
 
-      if (data.ok) {
-        display += data.output || '';
-      }
-
-      if (data.log) {
-        display += '\n\n-- Engine Log --\n' + data.log;
+      if (data.ok && data.output) {
+        html += '<span style="color:#22c55e">\u2713 Lifecycle completed</span>\n\n';
+        html += escapeHtml(data.output);
       }
 
       if (data.errors && data.errors.length > 0) {
-        display += '\n\n-- Errors --\n';
-        display += data.errors.map(e => `[LAW ${e.kind}] ${e.msg}`).join('\n');
+        html += '\n\n<div style="color:#ef4444;font-weight:600">\u2716 Compilation Errors</div>\n';
+        html += data.errors.map(e => {
+          let errClass = 'error-' + (e.kind || 'unknown');
+          return `<div class="${errClass}" style="color:#f87171;padding:2px 0">[LAW ${e.kind}] ${escapeHtml(e.msg)}</div>`;
+        }).join('');
+      }
+
+      if (data.log) {
+        html += '\n\n<div style="color:#8888aa;font-weight:500">-- Engine Log --</div>\n';
+        html += '<span style="color:#a0a0c0">' + escapeHtml(data.log) + '</span>';
       }
 
       if (!data.ok && !data.errors) {
-        if (data.error) display = data.error;
-        else display = data.raw_output || 'Compilation failed';
+        if (data.error) html = '<span style="color:#ef4444">Error: ' + escapeHtml(data.error) + '</span>';
+        else html = '<span style="color:#ef4444">' + escapeHtml(data.raw_output || 'Compilation failed') + '</span>';
       }
 
-      outputBox.textContent = display || 'Lifecycle completed (no output)';
+      if (data.ok && !data.output && !data.errors) {
+        html = '<span style="color:#22c55e">\u2713 Lifecycle completed (no output)</span>';
+      }
+
+      outputBox.innerHTML = html || '<span style="color:#8888aa">Lifecycle completed (no output)</span>';
       outputBox.classList.add('has-output');
+
+      // Scroll to top of output to see errors
+      outputBox.scrollTop = 0;
     }).catch(err => {
-      outputBox.textContent = 'API Error: ' + (err.message || 'request failed');
+      outputBox.innerHTML = '<span style="color:#ef4444">API Error: ' + escapeHtml(err.message || 'request failed') + '</span>';
       outputBox.classList.add('has-output');
     });
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
   /* ---- Nav Buttons ---- */
@@ -1131,9 +1520,9 @@
     let adg = '# Ampersand DataGraph\n';
     adg += `# Coordinates: x,y positions follow each node declaration\n`;
     adg += `graph ${programName.replace(/[^a-zA-Z0-9_]/g, '_')};\n`;
-    adg += 'setting memory: 8192;\n';
-    adg += 'setting immutable_pct: 3;\n';
-    adg += 'setting max_cycles: 5000;\n\n';
+    adg += `setting memory: ${projectSettings.memory || 8192};\n`;
+    adg += `setting immutable_pct: ${projectSettings.immutable_pct || 3};\n`;
+    adg += `setting max_cycles: ${projectSettings.max_cycles || 1000};\n\n`;
 
     const hasEntry = allNodes.some(n => (n.type === 'function' && (n.fnName === 'entry')));
     const hasResult = allNodes.some(n => (n.type === 'function' && (n.fnName === 'result')));
@@ -1144,31 +1533,24 @@
       const name = n.fnName || n.label || 'unnamed';
       const posstr = `# pos: ${Math.round(n.x)}, ${Math.round(n.y)} w:${Math.round(n.w)} h:${Math.round(n.h)}`;
       if (n.type === 'function') {
-        const explicitOp = n.fnOp || '';
-        const code = (n.fnCode || '').toLowerCase();
-        let op = explicitOp;
-        if (!op) {
-          if (code.includes('mux') || code.includes('select')) op = 'mux';
-          else if (code.includes('store') || code.includes('write')) op = 'store';
-          else if (code.includes('load') || code.includes('read')) op = 'load';
-          else if (code.includes('add') || code.includes('+')) op = 'add';
-          else if (code.includes('sub') || code.includes('-')) op = 'sub';
-          else if (code.includes('mul') || code.includes('*')) op = 'mul';
-          else if (code.includes('div') || code.includes('/')) op = 'div';
-          else if (code.includes('mod') || code.includes('%')) op = 'mod';
-          else if (code.includes('lt') || code.includes('<')) op = 'lt';
-          else if (code.includes('gt') || code.includes('>')) op = 'gt';
-          else if (code.includes('eq') || code.includes('==')) op = 'eq';
-          else if (code.includes('neq')) op = 'neq';
-        }
-
+        const inputs = (n.fnInputs || '').split(',').map(s => s.trim()).filter(Boolean);
+        const outputs = (n.fnOutputs || '').split(',').map(s => s.trim()).filter(Boolean);
+        const code = n.fnCode || '';
         const mem = n.fnSizeKB || 1;
         const endAttr = n.fnEnd ? ', end: true' : '';
-        if (op) {
-          adg += `node function ${name} { op: ${op}, mem: ${mem}${endAttr} };  ${posstr}\n`;
-        } else {
-          adg += `node function ${name} { mem: ${mem}${endAttr} };  ${posstr}\n`;
+
+        adg += `node function ${name} {\n`;
+        if (inputs.length > 0) {
+          adg += `    inputs: [${inputs.join(', ')}];\n`;
         }
+        if (outputs.length > 0) {
+          adg += `    outputs: [${outputs.join(', ')}];\n`;
+        }
+        adg += `    mem: ${mem}${endAttr};\n`;
+        if (code.trim()) {
+          adg += `    code: "${code.replace(/"/g, '\\"').replace(/\n/g, '\\n')}";\n`;
+        }
+        adg += `};  ${posstr}\n`;
       } else if (n.type === 'variable') {
         adg += `node variable ${name};  ${posstr}\n`;
       } else if (n.type === 'immutable') {
@@ -1252,8 +1634,8 @@
         n.label = label;
       } else if (type === 'immutable') {
         const hasVal = opts?.initialized && opts?.immValue;
-        n.w = hasVal ? 130 : 110;
-        n.h = 40;
+        n.w = hasVal ? 160 : 130;
+        n.h = 60;
         n.color = '#059669';
         n.label = opts?.name ?? 'imm_' + id;
         n.immValue = opts?.immValue ?? null;
@@ -1262,7 +1644,8 @@
         const fnName = opts?.fnName ?? 'handler';
         n.color = '#8b5cf6'; n.h = 52;
         n.fnName = fnName; n.fnCode = opts?.fnCode ?? '';
-        n.fnInputs = opts?.fnInputs ?? ''; n.fnSizeKB = opts?.fnSizeKB ?? 1;
+        n.fnInputs = opts?.fnInputs ?? ''; n.fnOutputs = opts?.fnOutputs ?? '';
+        n.fnSizeKB = opts?.fnSizeKB ?? 1;
         n.fnOp = opts?.fnOp || '';
         n.fnEnd = !!opts?.fnEnd;
         n.label = fnName;
@@ -1290,8 +1673,18 @@
         let initialized = false;
         let isEnd = false;
         let fnOp = '';
+        let fnInputs = '';
+        let fnOutputs = '';
+        let fnCode = '';
         if (attrBlock) {
-          const attrs = attrBlock[1].split(',').map(s => s.trim());
+          const raw = attrBlock[1];
+          const inputsM = raw.match(/inputs\s*:\s*\[([^\]]*)\]/);
+          if (inputsM) fnInputs = inputsM[1].split(',').map(s => s.trim()).filter(Boolean).join(', ');
+          const outputsM = raw.match(/outputs\s*:\s*\[([^\]]*)\]/);
+          if (outputsM) fnOutputs = outputsM[1].split(',').map(s => s.trim()).filter(Boolean).join(', ');
+          const codeM = raw.match(/code\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (codeM) fnCode = codeM[1].replace(/\\n/g, '\n');
+          const attrs = raw.split(',').map(s => s.trim());
           for (const a of attrs) {
             const parts = a.split(':').map(s => s.trim().replace(/^"|"$/g, ''));
             if (parts.length < 2) continue;
@@ -1315,7 +1708,7 @@
         } else if (kind === 'function') {
           const memM = line.match(/mem:\s*([\d.]+)/);
           localAddNode('function', {
-            name, fnName: name, fnOp: fnOp,
+            name, fnName: name, fnOp: fnOp, fnInputs: fnInputs, fnOutputs: fnOutputs, fnCode: fnCode,
             fnSizeKB: memM ? parseInt(memM[1]) : 1,
             fnEnd: isEnd, x: pos.x, y: pos.y,
           });
@@ -1350,37 +1743,98 @@
   /* ---- Keyboard ---- */
 
   document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 's' && !e.shiftKey) { e.preventDefault(); saveToDatabase(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') { e.preventDefault(); saveToFile(true); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); searchInput.focus(); searchInput.select(); return; }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveToDatabase(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); saveToFile(true); return; }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); searchInput.focus(); searchInput.select(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runCompile(); return; }
     if (e.shiftKey && (e.key === 'C' || e.key === 'c')) { e.preventDefault(); fnEditor.focus(); return; }
+
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); undo(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); redo(); return; }
+
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault();
+      if (selectedNodes.length > 0) {
+        pushUndo();
+        const toDup = [...selectedNodes];
+        deselectNode();
+        for (const n of toDup) duplicateNode(n);
+      } else if (selectedNode) {
+        pushUndo();
+        duplicateNode(selectedNode);
+      }
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault();
+      if (document.activeElement?.closest('#sidebar')) return;
+      selectedNodes = [...nodes];
+      if (selectedNodes.length > 0) selectedNode = selectedNodes[selectedNodes.length - 1];
+      updateSelectionUI();
+      render();
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && ['1','2','3','4'].includes(e.key)) {
+      e.preventDefault();
+      if (document.activeElement?.closest('#sidebar') || document.activeElement?.closest('input,textarea')) return;
+      const map = { '1': 'fn', '2': 'settings', '3': 'ai', '4': 'output' };
+      const panel = map[e.key];
+      const actItem = document.querySelector(`.activity-item[data-panel="${panel}"]`);
+      if (actItem) {
+        const wasActive = actItem.classList.contains('active');
+        if (wasActive) {
+          actItem.classList.remove('active');
+          document.getElementById(`panel-${panel}`)?.classList.remove('active');
+        } else {
+          switchActivityPanel(panel);
+          if (panel === 'settings') syncSettingsToSidebar();
+        }
+      }
+      return;
+    }
+
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (document.activeElement?.closest('#sidebar')) return;
       if (selectedEdge) {
+        pushUndo();
         const idx = edges.indexOf(selectedEdge);
         if (idx !== -1) edges.splice(idx, 1);
         markDirty();
         deselectEdge();
         return;
       }
-      if (!selectedNode) return;
-      const idx = nodes.indexOf(selectedNode);
-      if (idx !== -1) { const sid = selectedNode.id; nodes.splice(idx, 1); for (let i = edges.length - 1; i >= 0; i--) { if (edges[i].fromNodeId === sid || edges[i].toNodeId === sid) edges.splice(i, 1); } }
-      markDirty();
-      deselectNode();
+      if (selectedNodes.length > 0) {
+        pushUndo();
+        const ids = new Set(selectedNodes.map(n => n.id));
+        for (let i = nodes.length - 1; i >= 0; i--) { if (ids.has(nodes[i].id)) nodes.splice(i, 1); }
+        for (let i = edges.length - 1; i >= 0; i--) { if (ids.has(edges[i].fromNodeId) || ids.has(edges[i].toNodeId)) edges.splice(i, 1); }
+        markDirty();
+        deselectNode();
+        render();
+        return;
+      }
+      if (selectedNode) {
+        pushUndo();
+        const sid = selectedNode.id;
+        const idx = nodes.indexOf(selectedNode);
+        if (idx !== -1) nodes.splice(idx, 1);
+        for (let i = edges.length - 1; i >= 0; i--) { if (edges[i].fromNodeId === sid || edges[i].toNodeId === sid) edges.splice(i, 1); }
+        markDirty();
+        deselectNode();
+      }
     }
     if (e.key === 'Escape') {
       if (document.activeElement && document.activeElement.closest('#sidebar')) { document.activeElement.blur(); return; }
       if (selectedEdge) { deselectEdge(); return; }
+      if (selectedNodes.length > 1) { selectedNodes = [selectedNode]; updateSelectionUI(); render(); return; }
       deselectNode();
     }
 
     const isInput = document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.closest('#sidebar'));
     if (isInput) return;
 
-    // WASD / arrow-key panning works regardless of Ctrl/Cmd state -- this is
-    // the only way to pan the canvas while the mouse is locked.
     keysDown[e.code] = true;
     startMovementLoop();
   });
@@ -1512,19 +1966,20 @@
       }
     }
     return {
-      functions: funcs.map(n => ({ dbId: n.dbId ?? null, fnName: n.fnName, fnCode: n.fnCode, fnInputs: n.fnInputs, fnSizeKB: n.fnSizeKB, x: n.x, y: n.y })),
+      functions: funcs.map(n => ({ dbId: n.dbId ?? null, fnName: n.fnName, fnCode: n.fnCode, fnInputs: n.fnInputs, fnOutputs: n.fnOutputs || '', fnSizeKB: n.fnSizeKB, fnOp: n.fnOp || '', fnEnd: !!n.fnEnd, x: n.x, y: n.y })),
       variables: vars.map(n => ({ dbId: n.dbId ?? null, label: n.label, x: n.x, y: n.y })),
       immutables: imms.map(n => ({ dbId: n.dbId ?? null, label: n.label, immValue: n.immValue, initialized: n.initialized, x: n.x, y: n.y })),
       edges: edges.map(e => {
-        const fromIdx = nodes.findIndex(n => n.id === e.fromNodeId);
-        const toIdx = nodes.findIndex(n => n.id === e.toNodeId);
+        const fromNode = nodes.findIndex(n => n.id === e.fromNodeId);
+        const toNode = nodes.findIndex(n => n.id === e.toNodeId);
         return {
-          fromNodeId: fromIdx >= 0 ? fromIdx : e.fromNodeId,
+          fromNodeId: fromNode >= 0 ? fromNode : null,
           fromPortId: e.fromPortId,
-          toNodeId: toIdx >= 0 ? toIdx : e.toNodeId,
+          toNodeId: toNode >= 0 ? toNode : null,
           toPortId: e.toPortId
         };
       }),
+      settings: { ...projectSettings },
     };
   }
 
@@ -1551,6 +2006,7 @@
       variables: cd.variables,
       immutables: cd.immutables,
       edges: cd.edges,
+      settings: cd.settings,
     }).then(data => {
       if (data.ok) {
         let fnIdx = 0, varIdx = 0, immIdx = 0;
@@ -1596,7 +2052,8 @@
     setTimeout(() => { saveIndicator.textContent = ''; }, 2000);
   }
 
-  document.getElementById('navSave').addEventListener('click', () => saveToFile(false));
+  document.getElementById('navSave').addEventListener('click', () => saveToDatabase());
+  document.getElementById('navDownloadAdg').addEventListener('click', () => saveToFile(true));
 
   /* ---- Rename ---- */
 
@@ -1738,6 +2195,16 @@
         progDisplay.classList.remove('dirty');
         isDirty = false;
 
+        if (data.project.settings) {
+          const s = data.project.settings;
+          projectSettings.memory = s.memory || 8192;
+          projectSettings.immutable_pct = s.immutable_pct || 3;
+          projectSettings.max_cycles = s.max_cycles || 1000;
+        } else {
+          projectSettings = { memory: 8192, immutable_pct: 3, max_cycles: 1000 };
+        }
+        syncSettingsToSidebar();
+
         nodes.length = 0;
         edges.length = 0;
         nodeIdCounter = 0;
@@ -1758,6 +2225,8 @@
             fnCode: f.fn_code || '',
             fnInputs: f.fn_inputs || '',
             fnSizeKB: parseInt(f.fn_size_kb) || 1,
+            fnOp: f.fn_op || '',
+            fnEnd: !!f.fn_end,
             label: fnName
           };
           fitNodeWidth(n, fnName, 180, 50);
@@ -1790,7 +2259,7 @@
             type: 'immutable',
             x: parseFloat(v.pos_x) || 0,
             y: parseFloat(v.pos_y) || 0,
-            w: hasVal ? 120 : 100, h: 36,
+            w: hasVal ? 160 : 130, h: 60,
             color: '#059669',
             label: v.imm_name || `imm_${nodeIdCounter}`,
             immValue: immVal,

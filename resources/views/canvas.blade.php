@@ -42,11 +42,15 @@
           <i class="fa-solid fa-hammer"></i>
         </button>
         <div class="nav-sep"></div>
+        <button id="navDownloadAdg" title="Download .adg file (Ctrl+Shift+S)">
+          <i class="fa-solid fa-download"></i>
+        </button>
+        <div class="nav-sep"></div>
         <button id="navLoadAdg" title="Load .adg into new tab">
           <i class="fa-solid fa-folder-open"></i>
         </button>
         <div class="nav-sep"></div>
-        <button id="navSave" title="Save to file (click) / DB (Ctrl+S) / new file (Ctrl+Shift+S)">
+        <button id="navSave" title="Save (Ctrl+S)">
           <i class="fa-solid fa-floppy-disk"></i>
         </button>
         <button id="navNewTab" title="New graph tab">
@@ -89,99 +93,176 @@
   </div>
 
   <div id="sidebar">
-    <div class="sidebar-header">
-      <i class="fa-solid fa-code"></i>
-      <span>Functions</span>
-      <span style="margin-left:auto;font-size:12px;color:#666688;font-weight:400" id="saveIndicator"></span>
-    </div>
+    <div id="sidebarPanels" class="sidebar-panels">
+      <!-- Functions Panel -->
+      <div class="sidebar-panel active" id="panel-fn">
+        <div class="panel-header">
+          <span>Functions</span>
+          <span style="font-size:11px;color:#666688;font-weight:400" id="saveIndicator"></span>
+        </div>
+        <div class="panel-scroll">
+          <div class="panel-section" id="inputsSection">
+            <label class="section-label">
+              <i class="fa-solid fa-list"></i>
+              Inputs
+            </label>
+            <input type="text" id="inputsField" class="modal-input" placeholder="var1, var2, var3" spellcheck="false" />
+          </div>
 
-    <div class="sidebar-section" id="inputsSection">
-      <label class="section-label">
-        <i class="fa-solid fa-list"></i>
-        Inputs
-      </label>
-      <input type="text" id="inputsField" class="modal-input" placeholder="var1, var2, var3" spellcheck="false" />
-    </div>
+          <div class="panel-section" id="outputsSection">
+            <label class="section-label">
+              <i class="fa-solid fa-arrow-right-from-bracket"></i>
+              Outputs
+            </label>
+            <input type="text" id="outputsField" class="modal-input" placeholder="var1, var2" spellcheck="false" />
+          </div>
 
-    <div class="sidebar-section" id="sizeSection">
-      <label class="section-label">
-        <i class="fa-regular fa-hard-drive"></i>
-        Max Input Size
-      </label>
-      <div class="size-input-row">
-        <input type="number" id="sizeValue" value="1" min="1" max="1024" />
-        <span class="size-unit" id="sizeUnit">KB</span>
+          <div class="panel-section" id="sizeSection">
+            <label class="section-label">
+              <i class="fa-regular fa-hard-drive"></i>
+              Max Input Size
+            </label>
+            <div class="size-input-row">
+              <input type="number" id="sizeValue" value="1" min="1" max="1024" />
+              <span class="size-unit" id="sizeUnit">KB</span>
+            </div>
+            <div class="size-bar" id="sizeBar">
+              <div class="size-bar-fill" id="sizeBarFill"></div>
+            </div>
+          </div>
+
+          <div class="panel-section" id="fnNameSection">
+            <label class="section-label">
+              <i class="fa-solid fa-signature"></i>
+              Function Name
+            </label>
+            <input type="text" id="fnNameInput" class="modal-input" placeholder="handler" spellcheck="false" value="handler" />
+          </div>
+
+          <div class="panel-section" id="opSection">
+            <label class="section-label">
+              <i class="fa-solid fa-bolt"></i>
+              Operation
+            </label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select id="fnOpSelect" class="modal-input" style="flex:1">
+                <option value="">auto (from name)</option>
+                <option value="add">add (+)</option>
+                <option value="sub">sub (-)</option>
+                <option value="mul">mul (*)</option>
+                <option value="div">div (/)</option>
+                <option value="mod">mod (%)</option>
+                <option value="lt">lt (&lt;)</option>
+                <option value="gt">gt (&gt;)</option>
+                <option value="eq">eq (==)</option>
+                <option value="neq">neq (!=)</option>
+                <option value="mux">mux (select)</option>
+                <option value="load">load (read)</option>
+                <option value="store">store (write)</option>
+                <option value="pass">pass (identity)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="panel-section" id="endSection" style="display:flex;justify-content:space-between;align-items:center;">
+            <label class="section-label" style="margin-bottom:0;gap:8px;">
+              <i class="fa-solid fa-flag-checkered"></i>
+              End Node (termination)
+            </label>
+            <label class="imm-toggle" style="flex-shrink:0">
+              <input type="checkbox" id="fnEndToggle" />
+              <span class="imm-toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="panel-section panel-editor-section" id="editorSection">
+            <label class="section-label">
+              <i class="fa-solid fa-terminal"></i>
+              Code
+            </label>
+            <textarea id="fnEditor" placeholder="// Shift+C to focus&#10;function handler(req) {&#10;  return { ok: true };&#10;}" spellcheck="false"></textarea>
+          </div>
+        </div>
+
+        <div class="panel-footer">
+        <button id="btnCreateFn">
+          <i class="fa-solid fa-plus"></i>
+          Add to Graph
+        </button>
       </div>
-      <div class="size-bar" id="sizeBar">
-        <div class="size-bar-fill" id="sizeBarFill"></div>
+    </div>
+
+    <!-- Settings Panel -->
+      <div class="sidebar-panel" id="panel-settings">
+        <div class="panel-header">
+          <span>Project Settings</span>
+        </div>
+        <div class="panel-scroll">
+          <div class="panel-section">
+            <label class="section-label">
+              <i class="fa-regular fa-hard-drive"></i>
+              Memory Arena (KB)
+            </label>
+            <input type="number" id="sidebarMemory" class="modal-input" min="256" value="8192" />
+            <div style="margin-top:4px;color:#666688;font-size:11px">Total memory arena size. Min 256 KB.</div>
+          </div>
+          <div class="panel-section">
+            <label class="section-label">
+              <i class="fa-solid fa-percent"></i>
+              Immutable Pool (%)
+            </label>
+            <input type="number" id="sidebarImmPct" class="modal-input" min="1" max="50" value="3" />
+            <div style="margin-top:4px;color:#666688;font-size:11px">Percentage of memory reserved for immutables. 1% – 50%.</div>
+          </div>
+          <div class="panel-section">
+            <label class="section-label">
+              <i class="fa-solid fa-arrows-rotate"></i>
+              Max Cycles
+            </label>
+            <input type="number" id="sidebarCycles" class="modal-input" min="1" value="1000" />
+            <div style="margin-top:4px;color:#666688;font-size:11px">Maximum lifecycle cycles before termination. Min 1.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Panel -->
+      <div class="sidebar-panel" id="panel-ai">
+        <div class="panel-header">
+          <span>AI Assistant</span>
+        </div>
+        <div class="panel-scroll" style="padding:16px;color:#8888aa;font-size:13px;text-align:center;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px">
+          <i class="fa-solid fa-wand-magic-sparkles" style="font-size:32px;color:#6366f1;opacity:0.4"></i>
+          <span>AI integration coming soon.</span>
+        </div>
+      </div>
+
+      <!-- Output Panel -->
+      <div class="sidebar-panel" id="panel-output">
+        <div class="panel-header">
+          <span>Output</span>
+        </div>
+        <div class="panel-scroll">
+          <div class="panel-section" style="flex:1;display:flex;flex-direction:column;min-height:0">
+            <div id="outputBox" class="output-box" style="flex:1;max-height:none;min-height:60px">// Compile to see output</div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="sidebar-section" id="fnNameSection">
-      <label class="section-label">
-        <i class="fa-solid fa-signature"></i>
-        Function Name
-      </label>
-      <input type="text" id="fnNameInput" class="modal-input" placeholder="handler" spellcheck="false" value="handler" />
-    </div>
-
-    <div class="sidebar-section" id="opSection">
-      <label class="section-label">
-        <i class="fa-solid fa-bolt"></i>
-        Operation
-      </label>
-      <div style="display:flex;gap:8px;align-items:center">
-        <select id="fnOpSelect" class="modal-input" style="flex:1">
-          <option value="">auto (from name)</option>
-          <option value="add">add (+)</option>
-          <option value="sub">sub (-)</option>
-          <option value="mul">mul (*)</option>
-          <option value="div">div (/)</option>
-          <option value="mod">mod (%)</option>
-          <option value="lt">lt (&lt;)</option>
-          <option value="gt">gt (&gt;)</option>
-          <option value="eq">eq (==)</option>
-          <option value="neq">neq (!=)</option>
-          <option value="mux">mux (select)</option>
-          <option value="load">load (read)</option>
-          <option value="store">store (write)</option>
-          <option value="pass">pass (identity)</option>
-        </select>
+    <div id="sidebarActivity" class="sidebar-activity">
+      <div class="activity-item active" data-panel="fn" title="Functions (Ctrl+1)">
+        <i class="fa-solid fa-code"></i>
       </div>
-    </div>
-
-    <div class="sidebar-section" id="endSection" style="display:flex;justify-content:space-between;align-items:center;">
-      <label class="section-label" style="margin-bottom:0;gap:8px;">
-        <i class="fa-solid fa-flag-checkered"></i>
-        End Node (termination)
-      </label>
-      <label class="imm-toggle" style="flex-shrink:0">
-        <input type="checkbox" id="fnEndToggle" />
-        <span class="imm-toggle-slider"></span>
-      </label>
-    </div>
-
-    <div class="sidebar-section sidebar-editor-section" id="editorSection">
-      <label class="section-label">
+      <div class="activity-item" data-panel="settings" title="Project Settings (Ctrl+2)">
+        <i class="fa-solid fa-sliders"></i>
+      </div>
+      <div class="activity-item" data-panel="ai" title="AI Assistant (Ctrl+3)">
+        <i class="fa-solid fa-wand-magic-sparkles"></i>
+      </div>
+      <div class="activity-spacer"></div>
+      <div class="activity-item" data-panel="output" title="Output (Ctrl+4)">
         <i class="fa-solid fa-terminal"></i>
-        Code
-      </label>
-      <textarea id="fnEditor" placeholder="// Shift+C to focus&#10;function handler(req) {&#10;  return { ok: true };&#10;}" spellcheck="false"></textarea>
-    </div>
-
-    <div class="sidebar-section" id="outputSection">
-      <label class="section-label">
-        <i class="fa-regular fa-rectangle-list"></i>
-        Output
-      </label>
-      <div id="outputBox" class="output-box">// Compile to see output</div>
-    </div>
-
-    <div class="sidebar-footer">
-      <button id="btnCreateFn">
-        <i class="fa-solid fa-plus"></i>
-        Add to Graph
-      </button>
+      </div>
     </div>
   </div>
 
@@ -218,7 +299,7 @@
         <div class="imm-switch-row">
           <span class="imm-switch-label">Initialized</span>
           <label class="imm-toggle">
-            <input type="checkbox" id="immInitialized" disabled />
+            <input type="checkbox" id="immInitialized" />
             <span class="imm-toggle-slider"></span>
           </label>
         </div>
@@ -250,6 +331,8 @@
       </div>
     </div>
   </div>
+
+
 
   <script>
     const API_URL = '{{ url("api/canvas") }}';

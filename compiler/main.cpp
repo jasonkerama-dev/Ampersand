@@ -89,6 +89,11 @@ enum class OpKind {
     PASS, NONE
 };
 
+struct CodeExpr {
+    std::string output_name;
+    std::string expression;
+};
+
 struct IrNode {
     size_t      id              = 0;
     NodeKind    kind            = NodeKind::VARIABLE;
@@ -102,6 +107,9 @@ struct IrNode {
     SourcePos   pos;
     std::vector<size_t> in_ids;
     std::vector<size_t> out_ids;
+    std::vector<std::string> fn_inputs;
+    std::vector<std::string> fn_outputs;
+    std::vector<CodeExpr> code_exprs;
 };
 
 struct IrEdge { size_t src_id, dst_id; };
@@ -423,6 +431,123 @@ public:
     }
 };
 
+// ===== Expression Evaluator =====
+// Evaluates simple arithmetic expressions like "income * tax_rate / 100 - tax_credits"
+// Supports: + - * / ( ) and named references to input values.
+class ExprEval {
+    const IrNode& node;
+    const std::unordered_map<std::string, double>& vals_by_name;
+    ErrorSink& err;
+
+    struct Token {
+        enum { NUM, ID, PLUS, MINUS, MUL, DIV, LPAREN, RPAREN, END } type;
+        double num_val;
+        std::string id_val;
+    };
+
+    std::vector<Token> toks;
+    size_t pos = 0;
+
+    Token peek() const { return pos < toks.size() ? toks[pos] : Token{Token::END}; }
+    Token advance() { return pos < toks.size() ? toks[pos++] : Token{Token::END}; }
+    Token expect(int type, const char* hint) {
+        if (peek().type != type) {
+            err.push(ErrorKind::SYNTAX, std::string("expected ") + hint + " in '" + node.name + "' expression");
+            return Token{Token::END};
+        }
+        return advance();
+    }
+
+    double parse_expression() { return parse_add_sub(); }
+
+    double parse_add_sub() {
+        double left = parse_mul_div();
+        while (peek().type == Token::PLUS || peek().type == Token::MINUS) {
+            Token op = advance();
+            double right = parse_mul_div();
+            if (op.type == Token::PLUS) left += right;
+            else left -= right;
+        }
+        return left;
+    }
+
+    double parse_mul_div() {
+        double left = parse_primary();
+        while (peek().type == Token::MUL || peek().type == Token::DIV) {
+            Token op = advance();
+            double right = parse_primary();
+            if (op.type == Token::MUL) left *= right;
+            else {
+                if (right == 0) {
+                    err.push(ErrorKind::OVERFLOW, "division by zero in '" + node.name + "'");
+                    right = 1;
+                }
+                left /= right;
+            }
+        }
+        return left;
+    }
+
+    double parse_primary() {
+        if (peek().type == Token::NUM) {
+            double v = advance().num_val;
+            return v;
+        }
+        if (peek().type == Token::ID) {
+            std::string name = advance().id_val;
+            auto it = vals_by_name.find(name);
+            if (it != vals_by_name.end()) return it->second;
+            err.push(ErrorKind::SEMANTIC, "unknown reference '" + name + "' in '" + node.name + "'");
+            return 0;
+        }
+        if (peek().type == Token::LPAREN) {
+            advance();
+            double v = parse_expression();
+            expect(Token::RPAREN, ")");
+            return v;
+        }
+        if (peek().type == Token::MINUS) {
+            advance();
+            return -parse_primary();
+        }
+        err.push(ErrorKind::SYNTAX, "unexpected token in '" + node.name + "' expression");
+        return 0;
+    }
+
+public:
+    ExprEval(const IrNode& n, const std::unordered_map<std::string, double>& vbn, ErrorSink& e)
+        : node(n), vals_by_name(vbn), err(e) {}
+
+    double eval(const std::string& expr) {
+        toks.clear();
+        pos = 0;
+        for (size_t i = 0; i < expr.size();) {
+            char c = expr[i];
+            if (c == ' ' || c == '\t') { i++; continue; }
+            if (c == '+') { toks.push_back({Token::PLUS}); i++; }
+            else if (c == '-') { toks.push_back({Token::MINUS}); i++; }
+            else if (c == '*') { toks.push_back({Token::MUL}); i++; }
+            else if (c == '/') { toks.push_back({Token::DIV}); i++; }
+            else if (c == '(') { toks.push_back({Token::LPAREN}); i++; }
+            else if (c == ')') { toks.push_back({Token::RPAREN}); i++; }
+            else if (std::isdigit((unsigned char)c) || c == '.') {
+                std::string n;
+                while (i < expr.size() && (std::isdigit((unsigned char)expr[i]) || expr[i] == '.')) n += expr[i++];
+                toks.push_back({Token::NUM, std::stod(n)});
+            }
+            else if (std::isalpha((unsigned char)c) || c == '_') {
+                std::string id;
+                while (i < expr.size() && (std::isalnum((unsigned char)expr[i]) || expr[i] == '_')) id += expr[i++];
+                toks.push_back({Token::ID, 0, id});
+            }
+            else { i++; }
+        }
+        toks.push_back({Token::END});
+        double result = parse_expression();
+        return result;
+    }
+};
+
 // ===== Lifecycle Engine =====
 // Implements LAW 3 (state), LAW 4 (port count), LAW 5 (overflow), LAW 6 (termination).
 class LifecycleEngine {
@@ -507,6 +632,34 @@ class LifecycleEngine {
             if (!ready[src]) return false;
             vals[n.id] = vals[src];
             ready[n.id] = true;
+            return true;
+        }
+
+        // If function has code expressions, evaluate them instead of ops
+        if (n.kind == NodeKind::FUNCTION && !n.code_exprs.empty()) {
+            for (auto in : n.in_ids) {
+                if (!ready[in]) return false;
+            }
+            std::unordered_map<std::string, double> input_vals;
+            const auto* self = graph.node_by_id(n.id);
+            if (!self) return false;
+            size_t input_idx = 0;
+            for (auto in : n.in_ids) {
+                auto* src = graph.node_by_id(in);
+                if (src) {
+                    std::string input_name = src->name;
+                    if (input_idx < n.fn_inputs.size()) input_name = n.fn_inputs[input_idx];
+                    input_vals[input_name] = vals[in];
+                    input_idx++;
+                }
+            }
+            ExprEval ee(n, input_vals, *err);
+            for (auto& ce : n.code_exprs) {
+                double result = ee.eval(ce.expression);
+                vals[n.id] = result;
+                ready[n.id] = true;
+                if (log) log->trace("eval", n.name + "." + ce.output_name + "=" + std::to_string(result));
+            }
             return true;
         }
 
@@ -684,10 +837,18 @@ public:
 
             for (auto& n : graph.nodes) {
                 if (n.kind == NodeKind::FUNCTION && ready[n.id]) {
-                    for (auto out_id : n.out_ids) {
-                        auto* dst = graph.node_by_id(out_id);
-                        if (dst && (dst->kind == NodeKind::VARIABLE || dst->kind == NodeKind::RESULT))
-                            carry[out_id] = vals[n.id];
+                    if (!n.code_exprs.empty()) {
+                        for (auto& ce : n.code_exprs) {
+                            auto* dst = graph.node_by_name(ce.output_name);
+                            if (dst && (dst->kind == NodeKind::VARIABLE || dst->kind == NodeKind::RESULT))
+                                carry[dst->id] = vals[n.id];
+                        }
+                    } else {
+                        for (auto out_id : n.out_ids) {
+                            auto* dst = graph.node_by_id(out_id);
+                            if (dst && (dst->kind == NodeKind::VARIABLE || dst->kind == NodeKind::RESULT))
+                                carry[out_id] = vals[n.id];
+                        }
                     }
                 }
             }
@@ -709,7 +870,8 @@ enum class Tok {
     KW_VAR, KW_FN, KW_IMM, KW_STORE, KW_ENTRY, KW_RESULT,
     KW_ADD, KW_SUB, KW_MUL, KW_DIV, KW_MOD,
     KW_LT, KW_GT, KW_EQ, KW_NEQ, KW_PASS, KW_MUX, KW_LOAD,
-    LBRACE, RBRACE, SEMI, COLON, COMMA, ARROW,
+    LBRACE, RBRACE, LBRACKET, RBRACKET, SEMI, COLON, COMMA, ARROW,
+    KW_INPUTS, KW_OUTPUTS, KW_CODE, KW_RETURN,
     END_TOK
 };
 
@@ -736,6 +898,10 @@ static const std::unordered_map<std::string,Tok> KEYWORDS = {
     {"pass",     Tok::KW_PASS},
     {"mux",      Tok::KW_MUX},
     {"load",     Tok::KW_LOAD},
+    {"inputs",   Tok::KW_INPUTS},
+    {"outputs",  Tok::KW_OUTPUTS},
+    {"code",     Tok::KW_CODE},
+    {"return",   Tok::KW_RETURN},
 };
 
 static OpKind op_from_tok(Tok t) {
@@ -791,6 +957,8 @@ public:
             switch (peek()) {
                 case '{': pop(); return {Tok::LBRACE, "{", pos};
                 case '}': pop(); return {Tok::RBRACE, "}", pos};
+                case '[': pop(); return {Tok::LBRACKET, "[", pos};
+                case ']': pop(); return {Tok::RBRACKET, "]", pos};
                 case ';': pop(); return {Tok::SEMI,   ";", pos};
                 case ':': pop(); return {Tok::COLON,  ":", pos};
                 case ',': pop(); return {Tok::COMMA,  ",", pos};
@@ -939,24 +1107,54 @@ private:
         if (at(Tok::LBRACE)) {
             advance();
             while (!at(Tok::RBRACE) && !at(Tok::END_TOK)) {
-                std::string attr = cur.val; advance();
-                expect(Tok::COLON, ":");
-                std::string val = cur.val;
-                Tok val_tok = cur.type;
+                std::string attr = cur.val;
+                Tok attr_tok = cur.type;
                 advance();
+                expect(Tok::COLON, ":");
 
-                if      (attr == "value") n.value = val;
-                else if (attr == "op") {
-                    OpKind ok = op_from_tok(val_tok);
-                    if (ok == OpKind::NONE) ok = op_from_name(val);
-                    n.op = ok;
+                if (attr == "inputs" || attr_tok == Tok::KW_INPUTS) {
+                    expect(Tok::LBRACKET, "[");
+                    while (!at(Tok::RBRACKET) && !at(Tok::END_TOK)) {
+                        n.fn_inputs.push_back(cur.val);
+                        advance();
+                        if (at(Tok::COMMA)) advance();
+                    }
+                    if (at(Tok::RBRACKET)) advance();
                 }
-                else if (attr == "mem")
-                    n.mem_limit_bytes = (size_t)(std::stod(val) * 1024);
-                else if (attr == "entry")
-                    n.is_entry = (val == "true");
-                else if (attr == "end")
-                    n.is_end = (val == "true");
+                else if (attr == "outputs" || attr_tok == Tok::KW_OUTPUTS) {
+                    expect(Tok::LBRACKET, "[");
+                    while (!at(Tok::RBRACKET) && !at(Tok::END_TOK)) {
+                        n.fn_outputs.push_back(cur.val);
+                        advance();
+                        if (at(Tok::COMMA)) advance();
+                    }
+                    if (at(Tok::RBRACKET)) advance();
+                }
+                else if (attr == "code" || attr_tok == Tok::KW_CODE) {
+                    if (cur.type == Tok::STR) {
+                        std::string code = cur.val;
+                        advance();
+                        parse_code_body(code, n);
+                    }
+                }
+                else {
+                    std::string val = cur.val;
+                    Tok val_tok = cur.type;
+                    advance();
+
+                    if      (attr == "value") n.value = val;
+                    else if (attr == "op") {
+                        OpKind ok = op_from_tok(val_tok);
+                        if (ok == OpKind::NONE) ok = op_from_name(val);
+                        n.op = ok;
+                    }
+                    else if (attr == "mem")
+                        n.mem_limit_bytes = (size_t)(std::stod(val) * 1024);
+                    else if (attr == "entry")
+                        n.is_entry = (val == "true");
+                    else if (attr == "end")
+                        n.is_end = (val == "true");
+                }
 
                 if (at(Tok::COMMA) || at(Tok::SEMI)) advance();
             }
@@ -991,6 +1189,28 @@ private:
         expect(Tok::SEMI, ";");
 
         g.edges.push_back({resolve(src_name), resolve(dst_name)});
+    }
+
+    void parse_code_body(const std::string& code, IrNode& n) {
+        std::istringstream stream(code);
+        std::string line;
+        while (std::getline(stream, line)) {
+            size_t start = line.find_first_not_of(" \t\r");
+            if (start == std::string::npos) continue;
+            line = line.substr(start);
+            if (line.empty() || line[0] == '#') continue;
+            if (line.rfind("return ", 0) != 0) continue;
+            line = line.substr(7);
+            size_t colon = line.find(':');
+            if (colon == std::string::npos) continue;
+            std::string out_name = line.substr(0, colon);
+            size_t end = out_name.find_last_not_of(" \t\r");
+            if (end != std::string::npos) out_name = out_name.substr(0, end + 1);
+            std::string expr = line.substr(colon + 1);
+            end = expr.find_last_not_of(" \t\r;");
+            if (end != std::string::npos) expr = expr.substr(0, end + 1);
+            n.code_exprs.push_back({out_name, expr});
+        }
     }
 
     void link_edges(IrGraph& g) {

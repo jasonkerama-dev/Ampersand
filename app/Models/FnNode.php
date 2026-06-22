@@ -11,7 +11,7 @@ class FnNode extends Model
 
     protected $fillable = [
         'project_id', 'fn_name', 'fn_code', 'fn_inputs',
-        'fn_size_kb', 'pos_x', 'pos_y',
+        'fn_size_kb', 'fn_op', 'fn_end', 'pos_x', 'pos_y',
     ];
 
     public function project(): BelongsTo
