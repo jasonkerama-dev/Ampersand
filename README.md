@@ -185,6 +185,8 @@ database/migrations/  # SQL schema
 - [ ] Standard library as compressed library nodes
 - [ ] LLVM or WASM codegen backend
 
+Note that Ampersand is still in development and some claims are subject to change, as they may be affected by changes or tests made to the framework for Ampersand.
+
 ## License
 
 Apache-2.0 license
